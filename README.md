@@ -1,6 +1,6 @@
 # B3 Ações Pipeline — Databricks & Spark
 
-Sou apaixonado por mercado de ações, tenho curso oficial na B3 e já operei na bolsa. 
+Sou apaixonado por mercado de ações. 
 Quando comecei a estudar engenharia de dados, quis juntar as duas coisas num projeto real.
 
 A ideia foi simples: pegar dados históricos de ações brasileiras, processar com Spark 
