@@ -48,20 +48,21 @@ Todas as janelas são particionadas por ticker e ordenadas por data. Isso evita 
 
 ### 3. Machine Learning e MLflow
 
-No notebook `06_ml_training`, a tabela de features é convertida para pandas porque possui menos de 9 mil linhas. O conjunto é dividido por uma data de corte: os primeiros 80% dos dias formam o treino e os 20% finais formam o teste. Não há embaralhamento aleatório, pois isso poderia colocar informações futuras no treino e causar *data leakage*.
+No notebook `06_ml_training`, a tabela de features é convertida para pandas porque possui pouco mais de 10 mil linhas na execução atual, um volume pequeno para processamento em memória. Os 20% finais das datas formam o teste. Como o target de volatilidade olha cinco pregões à frente, uma faixa de segurança de cinco datas separa treino e teste. Não há embaralhamento aleatório, o que evita colocar informações futuras no treino e reduz o risco de *data leakage*.
 
 Foram treinados dois modelos `XGBRegressor` com as mesmas features e targets diferentes:
 
-| Hipótese | Target | MAE observado | R² observado |
-|---|---|---:|---:|
-| Prever o retorno do dia seguinte | `target_retorno_prox_dia` | 1,48 | -0,01 |
-| Prever a volatilidade do dia seguinte | `target_volatilidade_prox_dia` | 0,31 | 0,76 |
+| Experimento | Target | MAE | RMSE | R² |
+|---|---|---:|---:|---:|
+| XGBoost para retorno | `target_retorno_prox_dia` | 1,5288 | 2,0916 | -0,0117 |
+| XGBoost para volatilidade | `target_volatilidade_futura_5d` | **0,6699** | **0,9015** | **0,1793** |
+| Baseline de persistência | `target_volatilidade_futura_5d` | 0,8163 | 1,1178 | -0,2619 |
 
-MAE e R² avaliam os modelos sob perspectivas diferentes. O MAE mostra o erro absoluto médio na unidade do target. O R² indica quanto da variação do target foi explicada pelo modelo e pode ser negativo quando o desempenho é inferior ao uso da média como referência.
+MAE, RMSE e R² avaliam os modelos sob perspectivas diferentes. O MAE mostra o erro absoluto médio na unidade do target. O RMSE penaliza mais os erros grandes. O R² indica quanto da variação do target foi explicada pelo modelo e pode ser negativo quando o desempenho é inferior ao uso da média como referência.
 
-O resultado do retorno próximo de zero reforça como retornos diários são difíceis de prever apenas com o histórico de preços. Já o modelo de volatilidade encontrou um padrão mais consistente, compatível com o fenômeno conhecido como *volatility clustering*: períodos mais voláteis tendem a se concentrar no tempo.
+O modelo de retorno não superou uma referência baseada na média. Na volatilidade, o XGBoost reduziu o MAE em aproximadamente 18% e o RMSE em aproximadamente 19% em relação ao baseline de persistência. O R² de 0,1793 é moderado, mas o ganho sobre uma regra simples indica que as features carregaram algum sinal no período de teste.
 
-Cada treinamento é registrado como um run separado no MLflow. Parâmetros, MAE, R² e o artefato do modelo ficam associados ao experimento, permitindo comparar as duas hipóteses sem perder o histórico da execução.
+Cada treinamento é registrado como um run separado no MLflow. Parâmetros, MAE, RMSE, R² e o artefato do modelo ficam associados ao experimento. As métricas do baseline também são registradas junto ao run de volatilidade.
 
 ### 4. GenAI e classificação de sentimento
 
@@ -91,7 +92,7 @@ Na execução registrada no projeto:
 - MGLU3 teve queda próxima de 90% no período;
 - o varejo apareceu como o setor mais volátil;
 - a previsão de retorno diário não superou uma referência simples baseada na média;
-- a previsão de volatilidade obteve R² de 0,76 no recorte de teste utilizado.
+- o XGBoost de volatilidade reduziu o MAE em aproximadamente 18% frente ao baseline e obteve R² de 0,1793 no recorte de teste.
 
 O principal aprendizado foi separar duas perguntas que parecem semelhantes, mas têm comportamentos diferentes. Prever a direção ou o retorno de uma ação não é o mesmo que estimar seu risco. O projeto também mostrou como transformar a saída textual de um LLM em dado estruturado dentro da mesma arquitetura em camadas.
 
@@ -110,8 +111,8 @@ O principal aprendizado foi separar duas perguntas que parecem semelhantes, mas 
 
 | Notebook | Responsabilidade |
 |---|---|
-| `05_feature_engineering` | Cria médias móveis, volatilidade, lags e os targets de retorno e volatilidade. |
-| `06_ml_training` | Treina os dois modelos XGBoost, avalia MAE e R² e registra os runs no MLflow. |
+| `05_feature_engineering` | Cria médias móveis, volatilidade, lags e targets futuros sem sobreposição entre as janelas de volatilidade. |
+| `06_ml_training` | Treina os dois modelos XGBoost, aplica uma separação temporal com faixa de segurança, compara com baseline e registra os runs no MLflow. |
 
 ### GenAI
 
@@ -145,6 +146,6 @@ As dependências são instaladas nos próprios notebooks com `%pip install`. As 
 - A execução ainda é manual. Databricks Jobs ou Airflow poderiam organizar dependências, tentativas e agendamento.
 - A avaliação dos modelos usa um único corte temporal de 80/20. Uma validação *walk-forward* daria uma visão mais consistente do desempenho ao longo de diferentes períodos.
 - Os resultados refletem dez ações e o período iniciado em 2022. Eles não devem ser interpretados como recomendação de investimento.
-- O modelo de volatilidade ainda precisa ser comparado com baselines e validado em outros períodos antes de qualquer conclusão sobre generalização. Além disso, `volatilidade_5d` e o target do dia seguinte são janelas móveis sobrepostas, o que pode contribuir para o R² observado.
+- O XGBoost de volatilidade superou o baseline no corte atual, mas ainda precisa ser validado em outros períodos antes de qualquer conclusão sobre generalização.
 - As manchetes são fictícias e pouco numerosas. Um experimento estatístico exigiria notícias reais, mais observações e alinhamento temporal com os pregões.
 - A tabela Gold de sentimento está pronta para integração, mas o notebook atual ainda não a adiciona às features nem retreina os modelos com essa informação.
