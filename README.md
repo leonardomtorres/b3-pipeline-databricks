@@ -1,124 +1,150 @@
-# B3 Ações Pipeline — Databricks & Spark
+# Pipeline de Ações da B3 com Databricks, Machine Learning e GenAI
 
-Sou apaixonado por mercado de ações. 
-Quando comecei a estudar engenharia de dados, quis juntar as duas coisas num projeto real.
+Sou apaixonado por mercado de ações. Quando comecei a estudar Engenharia de Dados, quis juntar os dois temas em um projeto prático.
 
-A ideia foi simples: pegar dados históricos de ações brasileiras, processar com Spark 
-no Databricks e descobrir quem performou melhor desde 2022.
+O projeto começou como um pipeline para coletar e analisar o histórico de dez ações brasileiras desde 2022. Depois, evoluiu para preparar features, treinar e comparar modelos de Machine Learning, acompanhar experimentos com MLflow e processar manchetes com um LLM no Databricks.
 
-## O que o pipeline faz
-
-Coleta dados de 10 ações da B3 via API → limpa e transforma → gera análises de 
-retorno e volatilidade → plota os resultados → prepara features e testa três 
-hipóteses: dá pra prever o retorno de amanhã? A volatilidade? E o sentimento das 
-notícias carrega algum sinal que o preço sozinho não mostra?
-
-## Stack
-
-- Databricks Free Edition
-- PySpark + Delta Lake
-- yfinance API
-- Python e Spark SQL
-- pandas, scikit-learn, XGBoost
-- MLflow (tracking de experimentos)
-- Databricks Foundation Model API (LLM para classificação de texto)
+O objetivo não é criar uma estratégia automática de investimento. A proposta é mostrar a evolução de um dado desde a ingestão até a experimentação com ML e GenAI, mantendo claras as limitações de cada resultado.
 
 ## Arquitetura
 
-Bronze → Silver → Gold
+Fluxo principal de dados estruturados:
 
-- **Bronze** — dados brutos da API, sem transformação
-- **Silver** — limpeza, tipagem e retorno diário calculado
-- **Gold** — ranking de retorno acumulado e volatilidade por setor
+```text
+yfinance → Bronze → Silver → Gold → Feature Engineering → XGBoost → MLflow
+```
 
-## Resultados
+Fluxo paralelo de dados não estruturados:
+
+```text
+Manchetes → Bronze → LLM → Sentimento → Silver → Agregação por ticker → Gold
+```
+
+- **Bronze:** recebe os dados brutos de preços e as manchetes usadas no experimento de GenAI.
+- **Silver:** aplica tipagem e transformações, calcula retornos e estrutura o sentimento produzido pelo LLM.
+- **Gold:** disponibiliza rankings, volatilidade por setor, features para ML e sentimento agregado por ticker.
+
+Os notebooks são executados em sequência no Databricks. Cada etapa lê as tabelas Delta produzidas pelas anteriores.
+
+## Fluxo do projeto
+
+### 1. Engenharia de Dados
+
+O `yfinance` coleta preços de abertura, máxima, mínima, fechamento e volume de dez ações. Os dados são convertidos para Spark e gravados em Delta Lake. Na camada Silver, Window Functions separam cada ticker em ordem cronológica para calcular retorno diário e retorno acumulado. A Gold consolida o ranking de retorno e a volatilidade por setor, que alimentam as visualizações do projeto.
+
+### 2. Feature Engineering
+
+No notebook `05_feature_engineering`, os dados tratados da Silver são transformados em uma tabela Gold preparada para modelagem, a `b3_pipeline.gold_ml_features`.
+
+As features criadas são:
+
+- médias móveis do preço de fechamento em 5 e 10 dias;
+- volatilidade móvel do retorno em 5 dias;
+- retornos defasados em 1, 3 e 5 dias (`lags`);
+- retorno do dia seguinte como primeiro target;
+- volatilidade do dia seguinte como segundo target.
+
+Todas as janelas são particionadas por ticker e ordenadas por data. Isso evita misturar o histórico de ações diferentes e garante que as features usem somente observações coerentes com a série temporal.
+
+### 3. Machine Learning e MLflow
+
+No notebook `06_ml_training`, a tabela de features é convertida para pandas porque possui menos de 9 mil linhas. O conjunto é dividido por uma data de corte: os primeiros 80% dos dias formam o treino e os 20% finais formam o teste. Não há embaralhamento aleatório, pois isso poderia colocar informações futuras no treino e causar *data leakage*.
+
+Foram treinados dois modelos `XGBRegressor` com as mesmas features e targets diferentes:
+
+| Hipótese | Target | MAE observado | R² observado |
+|---|---|---:|---:|
+| Prever o retorno do dia seguinte | `target_retorno_prox_dia` | 1,48 | -0,01 |
+| Prever a volatilidade do dia seguinte | `target_volatilidade_prox_dia` | 0,31 | 0,76 |
+
+MAE e R² avaliam os modelos sob perspectivas diferentes. O MAE mostra o erro absoluto médio na unidade do target. O R² indica quanto da variação do target foi explicada pelo modelo e pode ser negativo quando o desempenho é inferior ao uso da média como referência.
+
+O resultado do retorno próximo de zero reforça como retornos diários são difíceis de prever apenas com o histórico de preços. Já o modelo de volatilidade encontrou um padrão mais consistente, compatível com o fenômeno conhecido como *volatility clustering*: períodos mais voláteis tendem a se concentrar no tempo.
+
+Cada treinamento é registrado como um run separado no MLflow. Parâmetros, MAE, R² e o artefato do modelo ficam associados ao experimento, permitindo comparar as duas hipóteses sem perder o histórico da execução.
+
+### 4. GenAI e classificação de sentimento
+
+O notebook `07_news_sentiment` adiciona dados não estruturados ao projeto. Um LLM disponível por endpoint no Databricks recebe um prompt e classifica cada manchete como `positivo`, `neutro` ou `negativo`.
+
+Essa abordagem é uma **zero-shot sentiment classification**: o LLM não é treinado novamente com exemplos do projeto. Ele usa o conhecimento adquirido no pré-treinamento e segue a instrução fornecida no prompt. A resposta textual é normalizada e convertida em uma representação numérica:
+
+```text
+positivo = 1
+neutro   = 0
+negativo = -1
+```
+
+Depois, o resultado é salvo na Silver e agregado por ticker na tabela `b3_pipeline.gold_sentimento_ticker`. Assim, a saída do LLM deixa de ser apenas texto e passa a ter uma estrutura que pode ser integrada a análises ou modelos futuros.
+
+As 24 manchetes desse notebook são fictícias e foram escritas apenas para fins educacionais. Elas estão identificadas como tal na coluna `nota`. O volume é suficiente para demonstrar o processamento com LLM, mas não para testar se sentimento melhora a previsão do mercado.
+
+## Resultados da análise
 
 ![Retorno acumulado](docs/results/retorno_acumulado.png)
 
 ![Volatilidade por setor](docs/results/volatilidade_setor.png)
 
-**O que encontrei:**
-- PETR4 liderou com +310% de retorno desde 2022
-- MGLU3 perdeu 90% do valor no mesmo período
-- Varejo foi o setor mais volátil — 2,5x mais que telecom
-- Quem opera na bolsa já sente isso, mas é diferente provar com dados
+Na execução registrada no projeto:
 
-## Modelagem
+- PETR4 apresentou o maior retorno acumulado desde 2022, acima de 300%;
+- MGLU3 teve queda próxima de 90% no período;
+- o varejo apareceu como o setor mais volátil;
+- a previsão de retorno diário não superou uma referência simples baseada na média;
+- a previsão de volatilidade obteve R² de 0,76 no recorte de teste utilizado.
 
-Depois de fechar a parte de engenharia, fui um passo além e usei os dados prontos 
-pra montar uma camada de ciência de dados: criei features (médias móveis, 
-volatilidade recente, retornos passados) e treinei dois modelos XGBoost, cada um 
-testando uma hipótese diferente, rastreados com MLflow.
-
-| Hipótese | Alvo | MAE | R² |
-|---|---|---|---|
-| Dá pra prever o **retorno** de amanhã? | `target_retorno_prox_dia` | 1,48 | -0,01 |
-| Dá pra prever a **volatilidade** de amanhã? | `target_volatilidade_prox_dia` | 0,31 | **0,76** |
-
-**O que isso significa:** retorno diário de ação é praticamente ruído — nenhum 
-modelo simples bate isso de cara, e um R² perto de zero aqui é o resultado 
-esperado, não uma falha. Volatilidade é outra história: existe um fenômeno bem 
-documentado em finanças chamado *volatility clustering* (dia volátil tende a ser 
-seguido de outro dia volátil), e o modelo capturou isso bem — um R² de 0,76 é um 
-resultado forte pra esse tipo de problema.
-
-O valor do projeto não foi "prever a bolsa" — foi testar duas hipóteses com dados 
-reais e deixar os números falarem: uma confirmou que preço futuro é difícil de 
-prever, a outra confirmou que risco futuro (volatilidade) não é.
-
-## GenAI — sentimento de notícias
-
-A última pergunta que faltava: será que o **texto** de uma notícia carrega 
-informação que o preço sozinho não carrega? Pra testar isso sem treinar nenhum 
-modelo do zero, usei um LLM hospedado no próprio Databricks (Foundation Model 
-API) como classificador *zero-shot* — ou seja, ele nunca viu um exemplo rotulado 
-meu, só recebeu uma instrução em linguagem natural pedindo pra classificar cada 
-manchete como positiva, negativa ou neutra.
-
-> ⚠️ As manchetes usadas aqui são **fictícias**, escritas por mim como exercício — 
-> não são notícias reais coletadas de veículo nenhum. Isso está marcado 
-> explicitamente numa coluna `nota` na própria tabela Bronze.
-
-| Ticker | Sentimento médio | Manchetes |
-|---|---|---|
-| TOTS3 | +1,00 | 2 |
-| PETR4 | +0,33 | 3 |
-| BRAP4, ITUB4, BBDC4, BBAS3, LREN3, VIVT3 | 0,00 | 2-3 cada |
-| VALE3, MGLU3 | -0,33 | 3 cada |
-
-**Sobre o rigor científico aqui, com a mesma honestidade do resto do projeto:** 
-24 manchetes (2-3 por ação) são suficientes pra *demonstrar a técnica* — o 
-pipeline completo Bronze → Silver (LLM classifica) → Gold (agrega por ticker) —, 
-mas não pra provar estatisticamente que sentimento melhora a previsão de retorno. 
-Isso exigiria notícias reais em volume proporcional aos dias de pregão (centenas 
-ou milhares), inviável de montar manualmente. O objetivo aqui foi mostrar uso 
-criterioso de GenAI — aplicado onde faz sentido (dado não-estruturado, onde ML 
-tradicional não serve) — não inflar uma conclusão que os dados não sustentam.
+O principal aprendizado foi separar duas perguntas que parecem semelhantes, mas têm comportamentos diferentes. Prever a direção ou o retorno de uma ação não é o mesmo que estimar seu risco. O projeto também mostrou como transformar a saída textual de um LLM em dado estruturado dentro da mesma arquitetura em camadas.
 
 ## Notebooks
 
-- `01_bronze_ingestion` — coleta via API e salva em Delta Lake
-- `02_silver_transform` — limpeza e retorno diário com Window Functions
-- `03_gold_analytics` — ranking de retorno e volatilidade por setor
-- `04_visualization` — gráficos com matplotlib
-- `05_feature_engineering` — médias móveis, volatilidade e os dois targets (retorno e volatilidade)
-- `06_ml_training` — treino dos dois modelos XGBoost, com tracking via MLflow
-- `07_news_sentiment` — classificação de sentimento com LLM (GenAI) via Foundation Model API
+### Engenharia de Dados
 
-## Como rodar
+| Notebook | Responsabilidade |
+|---|---|
+| `01_bronze_ingestion` | Coleta preços com `yfinance` e grava os dados brutos em Delta Lake. |
+| `02_silver_transform` | Aplica tipagem e calcula retorno diário e acumulado com Window Functions. |
+| `03_gold_analytics` | Gera o ranking de retorno e a volatilidade por setor. |
+| `04_visualization` | Cria os gráficos com matplotlib. |
 
-1. Criar conta gratuita em databricks.com/learn/free-edition
-2. Importar os notebooks e rodar na ordem 01 → 07 (célula por célula)
-3. yfinance é instalado direto com `%pip install yfinance`, e o mesmo vale pro 
-   `06_ml_training`, que instala `mlflow` e `xgboost` sozinho
-4. No `07_news_sentiment`, o Passo 2 lista os LLMs disponíveis no seu workspace — 
-   escolha um da lista antes de rodar o resto
+### Machine Learning
 
-## Próximos passos
+| Notebook | Responsabilidade |
+|---|---|
+| `05_feature_engineering` | Cria médias móveis, volatilidade, lags e os targets de retorno e volatilidade. |
+| `06_ml_training` | Treina os dois modelos XGBoost, avalia MAE e R² e registra os runs no MLflow. |
 
-- Hoje os notebooks rodam manualmente, um por um — orquestrar isso com 
-  Databricks Jobs (ou Airflow) é o próximo passo natural pra deixar o pipeline 
-  automatizado de ponta a ponta
-- Trocar as manchetes fictícias do notebook 07 por notícias reais (via API de 
-  notícias) permitiria testar a hipótese do sentimento com rigor estatístico de 
-  verdade, em vez de só demonstrar a técnica
+### GenAI
+
+| Notebook | Responsabilidade |
+|---|---|
+| `07_news_sentiment` | Usa um LLM para classificar manchetes e grava o sentimento estruturado em Silver e Gold. |
+
+## Tecnologias utilizadas
+
+- Python, pandas e matplotlib
+- PySpark e Spark SQL
+- Delta Lake e arquitetura Bronze, Silver e Gold
+- Databricks Free Edition
+- yfinance
+- XGBoost e scikit-learn
+- MLflow
+- Databricks Model Serving / Foundation Model API
+- LLM, prompt engineering e zero-shot classification
+
+## Como executar
+
+1. Crie um workspace no [Databricks Free Edition](https://www.databricks.com/learn/free-edition).
+2. Importe os notebooks da pasta `notebooks`.
+3. Execute os notebooks em ordem, do `01` ao `07`.
+4. No notebook `07`, execute primeiro a listagem de endpoints e confirme o nome do LLM disponível no workspace antes de iniciar a classificação.
+
+As dependências são instaladas nos próprios notebooks com `%pip install`. As tabelas são sobrescritas durante a execução, portanto uma versão atualizada de um notebook deve ser executada antes dos notebooks que dependem dela.
+
+## Limitações e próximos passos
+
+- A execução ainda é manual. Databricks Jobs ou Airflow poderiam organizar dependências, tentativas e agendamento.
+- A avaliação dos modelos usa um único corte temporal de 80/20. Uma validação *walk-forward* daria uma visão mais consistente do desempenho ao longo de diferentes períodos.
+- Os resultados refletem dez ações e o período iniciado em 2022. Eles não devem ser interpretados como recomendação de investimento.
+- O modelo de volatilidade ainda precisa ser comparado com baselines e validado em outros períodos antes de qualquer conclusão sobre generalização. Além disso, `volatilidade_5d` e o target do dia seguinte são janelas móveis sobrepostas, o que pode contribuir para o R² observado.
+- As manchetes são fictícias e pouco numerosas. Um experimento estatístico exigiria notícias reais, mais observações e alinhamento temporal com os pregões.
+- A tabela Gold de sentimento está pronta para integração, mas o notebook atual ainda não a adiciona às features nem retreina os modelos com essa informação.
