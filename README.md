@@ -9,8 +9,8 @@ no Databricks e descobrir quem performou melhor desde 2022.
 ## O que o pipeline faz
 
 Coleta dados de 10 ações da B3 via API → limpa e transforma → gera análises de 
-retorno e volatilidade → plota os resultados → prepara features e treina um 
-modelo pra tentar prever o retorno do dia seguinte.
+retorno e volatilidade → plota os resultados → prepara features e testa duas 
+hipóteses de Machine Learning: dá pra prever o retorno de amanhã? E a volatilidade?
 
 ## Stack
 
@@ -45,13 +45,24 @@ Bronze → Silver → Gold
 
 Depois de fechar a parte de engenharia, fui um passo além e usei os dados prontos 
 pra montar uma camada de ciência de dados: criei features (médias móveis, 
-volatilidade recente, retornos passados) e treinei um XGBoost pra tentar prever 
-o retorno do dia seguinte, rastreando tudo com MLflow.
+volatilidade recente, retornos passados) e treinei dois modelos XGBoost, cada um 
+testando uma hipótese diferente, rastreados com MLflow.
 
-**Resultado:** MAE de ~1,48 e R² próximo de zero. Não teve milagre, e isso já era 
-esperado — retorno diário de ação é praticamente ruído, então nenhum modelo simples 
-bate isso de cara. O ponto aqui não foi "prever a bolsa", foi mostrar o fluxo 
-completo: dado bruto → features → modelo treinado → experimento versionado.
+| Hipótese | Alvo | MAE | R² |
+|---|---|---|---|
+| Dá pra prever o **retorno** de amanhã? | `target_retorno_prox_dia` | 1,48 | -0,01 |
+| Dá pra prever a **volatilidade** de amanhã? | `target_volatilidade_prox_dia` | 0,31 | **0,76** |
+
+**O que isso significa:** retorno diário de ação é praticamente ruído — nenhum 
+modelo simples bate isso de cara, e um R² perto de zero aqui é o resultado 
+esperado, não uma falha. Volatilidade é outra história: existe um fenômeno bem 
+documentado em finanças chamado *volatility clustering* (dia volátil tende a ser 
+seguido de outro dia volátil), e o modelo capturou isso bem — um R² de 0,76 é um 
+resultado forte pra esse tipo de problema.
+
+O valor do projeto não foi "prever a bolsa" — foi testar duas hipóteses com dados 
+reais e deixar os números falarem: uma confirmou que preço futuro é difícil de 
+prever, a outra confirmou que risco futuro (volatilidade) não é.
 
 ## Notebooks
 
@@ -59,8 +70,8 @@ completo: dado bruto → features → modelo treinado → experimento versionado
 - `02_silver_transform` — limpeza e retorno diário com Window Functions
 - `03_gold_analytics` — ranking de retorno e volatilidade por setor
 - `04_visualization` — gráficos com matplotlib
-- `05_feature_engineering` — médias móveis, volatilidade e features pro modelo
-- `06_ml_training` — treino do XGBoost com tracking via MLflow
+- `05_feature_engineering` — médias móveis, volatilidade e os dois targets (retorno e volatilidade)
+- `06_ml_training` — treino dos dois modelos XGBoost, com tracking via MLflow
 
 ## Como rodar
 
