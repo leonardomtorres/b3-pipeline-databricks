@@ -9,8 +9,9 @@ no Databricks e descobrir quem performou melhor desde 2022.
 ## O que o pipeline faz
 
 Coleta dados de 10 ações da B3 via API → limpa e transforma → gera análises de 
-retorno e volatilidade → plota os resultados → prepara features e testa duas 
-hipóteses de Machine Learning: dá pra prever o retorno de amanhã? E a volatilidade?
+retorno e volatilidade → plota os resultados → prepara features e testa três 
+hipóteses: dá pra prever o retorno de amanhã? A volatilidade? E o sentimento das 
+notícias carrega algum sinal que o preço sozinho não mostra?
 
 ## Stack
 
@@ -20,6 +21,7 @@ hipóteses de Machine Learning: dá pra prever o retorno de amanhã? E a volatil
 - Python e Spark SQL
 - pandas, scikit-learn, XGBoost
 - MLflow (tracking de experimentos)
+- Databricks Foundation Model API (LLM para classificação de texto)
 
 ## Arquitetura
 
@@ -64,6 +66,35 @@ O valor do projeto não foi "prever a bolsa" — foi testar duas hipóteses com 
 reais e deixar os números falarem: uma confirmou que preço futuro é difícil de 
 prever, a outra confirmou que risco futuro (volatilidade) não é.
 
+## GenAI — sentimento de notícias
+
+A última pergunta que faltava: será que o **texto** de uma notícia carrega 
+informação que o preço sozinho não carrega? Pra testar isso sem treinar nenhum 
+modelo do zero, usei um LLM hospedado no próprio Databricks (Foundation Model 
+API) como classificador *zero-shot* — ou seja, ele nunca viu um exemplo rotulado 
+meu, só recebeu uma instrução em linguagem natural pedindo pra classificar cada 
+manchete como positiva, negativa ou neutra.
+
+> ⚠️ As manchetes usadas aqui são **fictícias**, escritas por mim como exercício — 
+> não são notícias reais coletadas de veículo nenhum. Isso está marcado 
+> explicitamente numa coluna `nota` na própria tabela Bronze.
+
+| Ticker | Sentimento médio | Manchetes |
+|---|---|---|
+| TOTS3 | +1,00 | 2 |
+| PETR4 | +0,33 | 3 |
+| BRAP4, ITUB4, BBDC4, BBAS3, LREN3, VIVT3 | 0,00 | 2-3 cada |
+| VALE3, MGLU3 | -0,33 | 3 cada |
+
+**Sobre o rigor científico aqui, com a mesma honestidade do resto do projeto:** 
+24 manchetes (2-3 por ação) são suficientes pra *demonstrar a técnica* — o 
+pipeline completo Bronze → Silver (LLM classifica) → Gold (agrega por ticker) —, 
+mas não pra provar estatisticamente que sentimento melhora a previsão de retorno. 
+Isso exigiria notícias reais em volume proporcional aos dias de pregão (centenas 
+ou milhares), inviável de montar manualmente. O objetivo aqui foi mostrar uso 
+criterioso de GenAI — aplicado onde faz sentido (dado não-estruturado, onde ML 
+tradicional não serve) — não inflar uma conclusão que os dados não sustentam.
+
 ## Notebooks
 
 - `01_bronze_ingestion` — coleta via API e salva em Delta Lake
@@ -72,16 +103,22 @@ prever, a outra confirmou que risco futuro (volatilidade) não é.
 - `04_visualization` — gráficos com matplotlib
 - `05_feature_engineering` — médias móveis, volatilidade e os dois targets (retorno e volatilidade)
 - `06_ml_training` — treino dos dois modelos XGBoost, com tracking via MLflow
+- `07_news_sentiment` — classificação de sentimento com LLM (GenAI) via Foundation Model API
 
 ## Como rodar
 
 1. Criar conta gratuita em databricks.com/learn/free-edition
-2. Importar os notebooks e rodar na ordem 01 → 06 (célula por célula)
+2. Importar os notebooks e rodar na ordem 01 → 07 (célula por célula)
 3. yfinance é instalado direto com `%pip install yfinance`, e o mesmo vale pro 
    `06_ml_training`, que instala `mlflow` e `xgboost` sozinho
+4. No `07_news_sentiment`, o Passo 2 lista os LLMs disponíveis no seu workspace — 
+   escolha um da lista antes de rodar o resto
 
 ## Próximos passos
 
 - Hoje os notebooks rodam manualmente, um por um — orquestrar isso com 
   Databricks Jobs (ou Airflow) é o próximo passo natural pra deixar o pipeline 
   automatizado de ponta a ponta
+- Trocar as manchetes fictícias do notebook 07 por notícias reais (via API de 
+  notícias) permitiria testar a hipótese do sentimento com rigor estatístico de 
+  verdade, em vez de só demonstrar a técnica
