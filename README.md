@@ -8,29 +8,66 @@ O objetivo não é criar uma estratégia automática de investimento. A proposta
 
 ## Arquitetura
 
-Fluxo principal de dados estruturados:
+Fluxo de preços e dados estruturados:
 
 ```text
-yfinance → Bronze → Silver → Gold → Feature Engineering → XGBoost → MLflow
+yfinance
+   ↓
+Bronze: bronze_b3_stocks
+   ↓
+Silver: silver_b3_stocks
+   ├──→ Gold Analytics: ranking de retorno + volatilidade por setor
+   │       ↓
+   │    Visualizações
+   │
+   └──→ Feature Engineering
+           ↓
+        Gold ML: gold_ml_features
+           ↓
+        XGBoost → Métricas e modelos no MLflow
 ```
 
-Fluxo paralelo de dados não estruturados:
+Fluxo paralelo de manchetes e dados não estruturados:
 
 ```text
-Manchetes → Bronze → LLM → Sentimento → Silver → Agregação por ticker → Gold
+Manchetes fictícias
+   ↓
+Bronze: bronze_noticias
+   ↓
+LLM: classificação zero-shot
+   ↓
+Silver: silver_noticias com sentimento estruturado
+   ↓
+Agregação por ticker
+   ↓
+Gold: gold_sentimento_ticker
 ```
 
-- **Bronze:** recebe os dados brutos de preços e as manchetes usadas no experimento de GenAI.
-- **Silver:** aplica tipagem e transformações, calcula retornos e estrutura o sentimento produzido pelo LLM.
-- **Gold:** disponibiliza rankings, volatilidade por setor, features para ML e sentimento agregado por ticker.
+- **Bronze:** preserva os dados brutos de cada fonte.
+- **Silver:** aplica tipagem, transformações e estrutura os dados para consumo.
+- **Gold Analytics:** disponibiliza agregações para análise e visualização.
+- **Gold ML:** disponibiliza as features e os targets usados no treinamento.
+- **Gold de sentimento:** disponibiliza o sentimento médio agregado por ticker.
 
-Os notebooks são executados em sequência no Databricks. Cada etapa lê as tabelas Delta produzidas pelas anteriores.
+Os notebooks são executados manualmente no Databricks. O fluxo de preços compartilha a Silver e depois se divide entre análise descritiva e Machine Learning. O fluxo de notícias é paralelo e ainda não alimenta os modelos XGBoost.
 
 ## Fluxo do projeto
 
 ### 1. Engenharia de Dados
 
 O `yfinance` coleta preços de abertura, máxima, mínima, fechamento e volume de dez ações. Os dados são convertidos para Spark e gravados em Delta Lake. Na camada Silver, Window Functions separam cada ticker em ordem cronológica para calcular retorno diário e retorno acumulado. A Gold consolida o ranking de retorno e a volatilidade por setor, que alimentam as visualizações do projeto.
+
+#### Resultados da análise descritiva
+
+![Retorno acumulado](docs/results/retorno_acumulado.png)
+
+![Volatilidade por setor](docs/results/volatilidade_setor.png)
+
+Na execução registrada:
+
+- PETR4 apresentou o maior retorno acumulado desde 2022, acima de 300%;
+- MGLU3 teve queda próxima de 90% no período;
+- o varejo apareceu como o setor mais volátil.
 
 ### 2. Feature Engineering
 
@@ -42,7 +79,7 @@ As features criadas são:
 - volatilidade móvel do retorno em 5 dias;
 - retornos defasados em 1, 3 e 5 dias (`lags`);
 - retorno do dia seguinte como primeiro target;
-- volatilidade do dia seguinte como segundo target.
+- volatilidade dos cinco pregões futuros como segundo target.
 
 Todas as janelas são particionadas por ticker e ordenadas por data. Isso evita misturar o histórico de ações diferentes e garante que as features usem somente observações coerentes com a série temporal.
 
@@ -80,19 +117,11 @@ Depois, o resultado é salvo na Silver e agregado por ticker na tabela `b3_pipel
 
 As 24 manchetes desse notebook são fictícias e foram escritas apenas para fins educacionais. Elas estão identificadas como tal na coluna `nota`. O volume é suficiente para demonstrar o processamento com LLM, mas não para testar se sentimento melhora a previsão do mercado.
 
-## Resultados da análise
+## Resultados e aprendizados de IA
 
-![Retorno acumulado](docs/results/retorno_acumulado.png)
-
-![Volatilidade por setor](docs/results/volatilidade_setor.png)
-
-Na execução registrada no projeto:
-
-- PETR4 apresentou o maior retorno acumulado desde 2022, acima de 300%;
-- MGLU3 teve queda próxima de 90% no período;
-- o varejo apareceu como o setor mais volátil;
-- a previsão de retorno diário não superou uma referência simples baseada na média;
-- o XGBoost de volatilidade reduziu o MAE em aproximadamente 18% frente ao baseline e obteve R² de 0,1793 no recorte de teste.
+- A previsão de retorno diário não superou uma referência simples baseada na média.
+- O XGBoost de volatilidade reduziu o MAE em aproximadamente 18% frente ao baseline e obteve R² de 0,1793 no recorte de teste.
+- O LLM transformou as manchetes em sentimento estruturado, mas esse dado ainda não foi integrado ao treinamento dos modelos.
 
 O principal aprendizado foi separar duas perguntas que parecem semelhantes, mas têm comportamentos diferentes. Prever a direção ou o retorno de uma ação não é o mesmo que estimar seu risco. O projeto também mostrou como transformar a saída textual de um LLM em dado estruturado dentro da mesma arquitetura em camadas.
 
