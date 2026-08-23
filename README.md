@@ -2,7 +2,7 @@
 
 Sou apaixonado por mercado de ações. Quando comecei a estudar Engenharia de Dados, quis juntar os dois temas em um projeto prático.
 
-O projeto começou como um pipeline para coletar e analisar o histórico de dez ações brasileiras desde 2022. Depois, evoluiu para preparar features, treinar e comparar modelos de Machine Learning, acompanhar experimentos com MLflow e processar manchetes com um LLM no Databricks.
+O projeto começou como um pipeline para coletar e analisar o histórico de dez ações brasileiras desde 2022. Depois, evoluiu para estudar uma pergunta de Machine Learning: o próximo período tende a fechar em alta ou em baixa? Para isso, preparei features diárias e semanais, comparei classificadores com baselines, acompanhei os experimentos com MLflow e processei manchetes com um LLM no Databricks.
 
 O objetivo não é criar uma estratégia automática de investimento. A proposta é mostrar a evolução de um dado desde a ingestão até a experimentação com ML e GenAI, mantendo claras as limitações de cada resultado.
 
@@ -22,9 +22,13 @@ Silver: silver_b3_stocks
    │
    └──→ Feature Engineering
            ↓
-        Gold ML: gold_ml_features
+        Features diárias e semanais
            ↓
-        XGBoost → Métricas e modelos no MLflow
+        Gold ML
+           ↓
+        XGBoost Classifier → Baseline → Métricas e modelos no MLflow
+           ↓
+        Estimativas de tendência por ticker
 ```
 
 Fluxo paralelo de manchetes e dados não estruturados:
@@ -46,7 +50,7 @@ Gold: gold_sentimento_ticker
 - **Bronze:** preserva os dados brutos de cada fonte.
 - **Silver:** aplica tipagem, transformações e estrutura os dados para consumo.
 - **Gold Analytics:** disponibiliza agregações para análise e visualização.
-- **Gold ML:** disponibiliza as features e os targets usados no treinamento.
+- **Gold ML:** disponibiliza as features, os targets de tendência e as estimativas mais recentes por ticker.
 - **Gold de sentimento:** disponibiliza o sentimento médio agregado por ticker.
 
 Os notebooks são executados manualmente no Databricks. O fluxo de preços compartilha a Silver e depois se divide entre análise descritiva e Machine Learning. O fluxo de notícias é paralelo e ainda não alimenta os modelos XGBoost.
@@ -71,35 +75,38 @@ Na execução registrada:
 
 ### 2. Feature Engineering
 
-No notebook `05_feature_engineering`, os dados tratados da Silver são transformados em uma tabela Gold preparada para modelagem, a `b3_pipeline.gold_ml_features`.
+No notebook `05_feature_engineering`, os dados tratados da Silver são transformados em duas tabelas Gold preparadas para classificação: uma diária e outra semanal. A proposta é comparar se a redução do ruído diário produz um sinal mais útil no horizonte semanal.
 
-As features criadas são:
+Na base diária, as features usam apenas o fechamento atual e informações passadas:
 
-- médias móveis do preço de fechamento em 5 e 10 dias;
-- volatilidade móvel do retorno em 5 dias;
-- retornos defasados em 1, 3 e 5 dias (`lags`);
-- retorno do dia seguinte como primeiro target;
-- volatilidade dos cinco pregões futuros como segundo target.
+- retorno diário;
+- médias móveis de 5 e 20 pregões e distância do fechamento para cada média;
+- momentum de 5 e 20 pregões;
+- volatilidade dos retornos em 5 e 20 pregões;
+- retornos defasados em 1, 2 e 5 pregões.
 
-Todas as janelas são particionadas por ticker e ordenadas por data. Isso evita misturar o histórico de ações diferentes e garante que as features usem somente observações coerentes com a série temporal.
+Na base semanal, os pregões são agrupados por semana e o fechamento mais recente forma o preço semanal. A mesma ideia é aplicada com janelas de 4 e 12 semanas e lags de 1, 2 e 4 semanas.
+
+Os targets são binários: `1` quando o fechamento do próximo período é maior que o atual e `0` caso contrário. Todas as janelas são particionadas por ticker e ordenadas por data. As features olham somente para o presente e o passado; o próximo fechamento é usado exclusivamente como resposta histórica para o treinamento.
 
 ### 3. Machine Learning e MLflow
 
-No notebook `06_ml_training`, a tabela de features é convertida para pandas porque possui pouco mais de 10 mil linhas na execução atual, um volume pequeno para processamento em memória. Os 20% finais das datas formam o teste. Como o target de volatilidade olha cinco pregões à frente, uma faixa de segurança de cinco datas separa treino e teste. Não há embaralhamento aleatório, o que evita colocar informações futuras no treino e reduz o risco de *data leakage*.
+No notebook `06_ml_training`, as tabelas são convertidas para pandas por terem volume adequado ao processamento em memória. Os 20% finais das datas formam o teste e uma observação é retirada entre treino e teste, pois o target olha um período à frente. Não há embaralhamento aleatório. Assim, o teste representa um período posterior ao treino e reduz o risco de *data leakage*.
 
-Foram treinados dois modelos `XGBRegressor` com as mesmas features e targets diferentes:
+Foram treinados dois `XGBClassifier`, um para o próximo pregão e outro para a próxima semana. Cada modelo foi comparado com um baseline que sempre prevê a classe mais frequente no treino.
 
-| Experimento | Target | MAE | RMSE | R² |
+| Horizonte | Abordagem | Accuracy | Balanced accuracy | ROC-AUC |
 |---|---|---:|---:|---:|
-| XGBoost para retorno | `target_retorno_prox_dia` | 1,5288 | 2,0916 | -0,0117 |
-| XGBoost para volatilidade | `target_volatilidade_futura_5d` | **0,6699** | **0,9015** | **0,1793** |
-| Baseline de persistência | `target_volatilidade_futura_5d` | 0,8163 | 1,1178 | -0,2619 |
+| Diário | XGBoost | 51,93% | 51,75% | 52,14% |
+| Diário | Baseline | 51,67% | 50,00% | 50,00% |
+| Semanal | XGBoost | **55,43%** | **55,26%** | **57,38%** |
+| Semanal | Baseline | 51,09% | 50,00% | 50,00% |
 
-MAE, RMSE e R² avaliam os modelos sob perspectivas diferentes. O MAE mostra o erro absoluto médio na unidade do target. O RMSE penaliza mais os erros grandes. O R² indica quanto da variação do target foi explicada pelo modelo e pode ser negativo quando o desempenho é inferior ao uso da média como referência.
+Accuracy mede o percentual total de acertos. Balanced accuracy calcula o desempenho de forma equilibrada entre alta e baixa, sendo útil quando as classes não aparecem na mesma proporção. ROC-AUC mede a capacidade de ordenar casos de alta acima dos casos de baixa em diferentes limiares.
 
-O modelo de retorno não superou uma referência baseada na média. Na volatilidade, o XGBoost reduziu o MAE em aproximadamente 18% e o RMSE em aproximadamente 19% em relação ao baseline de persistência. O R² de 0,1793 é moderado, mas o ganho sobre uma regra simples indica que as features carregaram algum sinal no período de teste.
+No horizonte diário, o resultado ficou muito próximo do baseline e de uma classificação aleatória. No semanal, o XGBoost superou o baseline nas três métricas da tabela. O ROC-AUC de 57,38% indica um sinal modesto no recorte de teste, não evidência suficiente para uma estratégia de investimento.
 
-Cada treinamento é registrado como um run separado no MLflow. Parâmetros, MAE, RMSE, R² e o artefato do modelo ficam associados ao experimento. As métricas do baseline também são registradas junto ao run de volatilidade.
+Cada treinamento é registrado como um run separado no MLflow. Parâmetros, métricas de classificação, métricas do baseline e o artefato do modelo ficam associados ao experimento. Ao final, uma versão treinada com todo o histórico rotulado produz probabilidades recentes por ticker. Probabilidades entre 45% e 55% são apresentadas como `indefinida`, evitando transformar resultados próximos de 50% em uma certeza artificial.
 
 ### 4. GenAI e classificação de sentimento
 
@@ -119,11 +126,11 @@ As 24 manchetes desse notebook são fictícias e foram escritas apenas para fins
 
 ## Resultados e aprendizados de IA
 
-- A previsão de retorno diário não superou uma referência simples baseada na média.
-- O XGBoost de volatilidade reduziu o MAE em aproximadamente 18% frente ao baseline e obteve R² de 0,1793 no recorte de teste.
+- A classificação do próximo pregão ficou praticamente empatada com o baseline, confirmando a dificuldade de encontrar sinal no horizonte diário.
+- A classificação semanal foi mais promissora: atingiu 55,43% de accuracy e ROC-AUC de 57,38%, acima dos 51,09% e 50% do baseline.
 - O LLM transformou as manchetes em sentimento estruturado, mas esse dado ainda não foi integrado ao treinamento dos modelos.
 
-O principal aprendizado foi separar duas perguntas que parecem semelhantes, mas têm comportamentos diferentes. Prever a direção ou o retorno de uma ação não é o mesmo que estimar seu risco. O projeto também mostrou como transformar a saída textual de um LLM em dado estruturado dentro da mesma arquitetura em camadas.
+O principal aprendizado foi que mudar o horizonte altera o comportamento do problema. O fechamento diário apresentou muito ruído, enquanto a agregação semanal preservou um sinal pequeno no período avaliado. O projeto também mostrou como transformar a saída textual de um LLM em dado estruturado dentro da mesma arquitetura em camadas.
 
 ## Notebooks
 
@@ -140,8 +147,8 @@ O principal aprendizado foi separar duas perguntas que parecem semelhantes, mas 
 
 | Notebook | Responsabilidade |
 |---|---|
-| `05_feature_engineering` | Cria médias móveis, volatilidade, lags e targets futuros sem sobreposição entre as janelas de volatilidade. |
-| `06_ml_training` | Treina os dois modelos XGBoost, aplica uma separação temporal com faixa de segurança, compara com baseline e registra os runs no MLflow. |
+| `05_feature_engineering` | Cria features e targets binários de tendência para os horizontes diário e semanal. |
+| `06_ml_training` | Treina classificadores XGBoost, aplica separação temporal, compara cada horizonte com seu baseline, registra os runs no MLflow e gera estimativas recentes. |
 
 ### GenAI
 
@@ -165,7 +172,7 @@ O principal aprendizado foi separar duas perguntas que parecem semelhantes, mas 
 
 1. Crie um workspace no [Databricks Free Edition](https://www.databricks.com/learn/free-edition).
 2. Importe os notebooks da pasta `notebooks`.
-3. Execute os notebooks em ordem, do `01` ao `07`.
+3. Execute os notebooks de `01` a `06` em ordem. O notebook `07` representa um fluxo paralelo e pode ser executado separadamente.
 4. No notebook `07`, execute primeiro a listagem de endpoints e confirme o nome do LLM disponível no workspace antes de iniciar a classificação.
 
 As dependências são instaladas nos próprios notebooks com `%pip install`. As tabelas são sobrescritas durante a execução, portanto uma versão atualizada de um notebook deve ser executada antes dos notebooks que dependem dela.
@@ -173,8 +180,9 @@ As dependências são instaladas nos próprios notebooks com `%pip install`. As 
 ## Limitações e próximos passos
 
 - A execução ainda é manual. Databricks Jobs ou Airflow poderiam organizar dependências, tentativas e agendamento.
-- A avaliação dos modelos usa um único corte temporal de 80/20. Uma validação *walk-forward* daria uma visão mais consistente do desempenho ao longo de diferentes períodos.
+- A avaliação dos classificadores usa um único corte temporal de 80/20. Uma validação *walk-forward* daria uma visão mais consistente do desempenho ao longo de diferentes períodos.
 - Os resultados refletem dez ações e o período iniciado em 2022. Eles não devem ser interpretados como recomendação de investimento.
-- O XGBoost de volatilidade superou o baseline no corte atual, mas ainda precisa ser validado em outros períodos antes de qualquer conclusão sobre generalização.
+- O modelo diário ficou próximo do acaso. O semanal superou o baseline no corte atual, mas o ganho ainda é pequeno e precisa ser validado em outros períodos.
+- As classificações `alta`, `baixa` e `indefinida` demonstram a saída técnica do pipeline. Relacioná-las a posições compradas ou vendidas exigiria backtest com custos, regras de entrada e saída, drawdown, controle de risco e teste em ambiente simulado.
 - As manchetes são fictícias e pouco numerosas. Um experimento estatístico exigiria notícias reais, mais observações e alinhamento temporal com os pregões.
 - A tabela Gold de sentimento está pronta para integração, mas o notebook atual ainda não a adiciona às features nem retreina os modelos com essa informação.
