@@ -1,6 +1,6 @@
 # Pipeline de Ações da B3 com Databricks, Machine Learning e GenAI
 
-Sou apaixonado por mercado de ações. Quando comecei a estudar Engenharia de Dados, quis juntar os dois temas em um projeto prático.
+Mercado de ações é um assunto que acompanho, e quis usá-lo como base para um projeto prático em Machine Learning, GenAI e Data Engineer.
 
 O projeto começou como um pipeline para coletar e analisar o histórico de dez ações brasileiras desde 2022. Depois, evoluiu para estudar uma pergunta de Machine Learning: o próximo período tende a fechar em alta ou em baixa? Para isso, preparei features diárias e semanais, comparei classificadores com baselines, acompanhei os experimentos com MLflow e processei manchetes com um LLM no Databricks.
 
